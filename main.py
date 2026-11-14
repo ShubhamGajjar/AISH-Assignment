@@ -11,6 +11,7 @@ import sys
 import time
 
 from pipeline.extract import run_extraction
+from pipeline import storage
 
 log = logging.getLogger("pipeline")
 
@@ -22,6 +23,10 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
                         help="root of the Enron maildir tree (default: data/maildir)")
     parser.add_argument("--error-log", default="error_log.txt",
                         help="parse-failure log (default: error_log.txt)")
+    parser.add_argument("--db", default="enron.db",
+                        help="SQLite database file (default: enron.db)")
+    parser.add_argument("--fresh", action="store_true",
+                        help="delete and rebuild the database instead of loading incrementally")
     return parser.parse_args(argv)
 
 
@@ -39,6 +44,19 @@ def main(argv: list[str] | None = None) -> int:
     records, stats = run_extraction(args.maildir, args.error_log)
     log.info("Extraction finished in %.1fs; %d failures written to %s",
              time.perf_counter() - started, stats.failed, args.error_log)
+
+    step = time.perf_counter()
+    if args.fresh:
+        log.info("--fresh: removing existing database %s", args.db)
+        storage.reset_database(args.db)
+    log.info("[2/4] Storing %d records in %s", len(records), args.db)
+    conn = storage.connect(args.db)
+    try:
+        storage.init_db(conn)
+        storage.store_records(conn, records)
+    finally:
+        conn.close()
+    log.info("Storage finished in %.1fs", time.perf_counter() - step)
     return 0
 
 

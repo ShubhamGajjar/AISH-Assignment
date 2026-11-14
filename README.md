@@ -4,7 +4,7 @@ This pipeline parses raw Enron emails (RFC 2822) into structured records and sto
 SQLite database. It then flags fuzzy duplicates and sends duplicate notices through a Gmail MCP server.
 Everything runs from one command: `python main.py`.
 
-> Status: **Task 1 (extraction) complete.** Tasks 2–4 are in progress.
+> Status: **Tasks 1 (extraction) and 2 (database) complete.** Tasks 3–4 are in progress.
 
 ---
 
@@ -56,8 +56,15 @@ cd ..
 
 ```bash
 python main.py                 # full pipeline (dry-run: no email is sent)
+python main.py --fresh         # delete and rebuild enron.db from scratch
 python main.py --maildir PATH  # use a different maildir root
+python main.py --db FILE       # use a different SQLite file (default: enron.db)
+
+sqlite3 -header -column enron.db < sample_queries.sql   # run the sample queries
 ```
+
+Without `--fresh`, loading is incremental. Emails whose `message_id` is already stored are skipped by
+the UNIQUE constraint, so a second run inserts 0 rows.
 
 ---
 
@@ -75,6 +82,8 @@ data/maildir/**  ──►  [1] extract.py  ──►  [2] storage.py  ──►
 |---|---|
 | `main.py` | CLI entry point that runs the stages in order |
 | `pipeline/extract.py` | Task 1: find files, parse fields, log failures, report statistics |
+| `pipeline/storage.py` + `schema.sql` | Task 2: create the SQLite schema and load records with normalized recipients |
+| `sample_queries.sql` | Task 2: example queries, each with its expected output |
 
 ### Task 1: extraction design notes
 - **Parser.** Uses the stdlib `email` package with the lenient `compat32` policy, so malformed headers
@@ -105,6 +114,37 @@ data/maildir/**  ──►  [1] extract.py  ──►  [2] storage.py  ──►
 - **Robustness.** Each file is parsed inside its own try/except, so the run never stops on bad input. This
   was tested with empty, binary, header-only, invalid-date and 5 MB single-line files.
 
+### Task 2: database design notes
+```
+emails (1) ──< email_recipients >── (1) addresses
+  id PK                email_id FK → emails.id         id PK
+  message_id UNIQUE    address_id FK → addresses.id    email UNIQUE
+  date, from_address,  recipient_type ∈ {to,cc,bcc}
+  subject, body, …     position (order in header)
+  is_duplicate, duplicate_of → emails.message_id,
+  similarity_score, notification_sent, notification_date
+```
+- **SQLite.** The spec names it as the preferred option. It needs no server, the whole database is one
+  file, and Python's built-in `sqlite3` module drives it, so no extra dependency is needed.
+- **Normalization.** Each distinct address is stored once in `addresses`. `email_recipients` links
+  emails to addresses with a role (`to`/`cc`/`bcc`) and a `position`, so the original order of each list
+  can be rebuilt (Q4 in `sample_queries.sql`). `from_address` stays a column on `emails`, because the spec
+  requires an index on it there.
+- **Integrity.**
+  - `UNIQUE(message_id)` blocks exact duplicates, and `UNIQUE(source_file)` gives traceability back to
+    the raw file.
+  - `CHECK` constraints keep the boolean columns at 0/1 and the score between 0 and 100.
+  - A row-level `CHECK` means a duplicate flag can never exist without its `duplicate_of` reference.
+  - Foreign keys are enforced (`PRAGMA foreign_keys = ON`).
+- **Dates.** Stored as UTC text `YYYY-MM-DD HH:MM:SS`, which sorts chronologically. Range queries use
+  `idx_emails_date`, as Q6 in `sample_queries.sql` shows with `EXPLAIN QUERY PLAN`.
+- **Indexes.** `date`, `from_address` and `subject` are required by the spec. `email_recipients
+  (address_id, recipient_type)` supports address lookups, and `duplicate_of` supports the Task 3 and 4
+  joins.
+- **Transactions.** The whole load runs in one transaction, with a SAVEPOINT for each email. If an insert
+  fails, only that email and its recipient rows are rolled back, the error is logged, and the load
+  continues.
+
 ## 5. Results
 
 ### Task 1: extraction (23,873 files, about 6 s)
@@ -129,3 +169,16 @@ data/maildir/**  ──►  [1] extract.py  ──►  [2] storage.py  ──►
 
 ¹ In this corpus the `Bcc:` header is generally a copy of `Cc:`, a known artifact of how the dataset was
 converted. Both are stored exactly as parsed.
+
+### Task 2: database (load about 2 s, DB about 72 MB)
+
+| Check | Result |
+|---|---|
+| `emails` rows | 22,596 (equal to the parsed count) |
+| `addresses` (distinct) | 12,082 |
+| `email_recipients` links | 192,006 |
+| Second run without `--fresh` | 0 inserted, 22,596 skipped by `UNIQUE(message_id)` |
+| Inserting a duplicate `message_id` by hand | Rejected: `UNIQUE constraint failed: emails.message_id` |
+| Recipient lists rebuilt from the DB vs. parser output | 22,596 of 22,596 match, including order |
+| `PRAGMA integrity_check` / `foreign_key_check` | ok / 0 violations |
+| Date range (UTC) | 1980-01-01 → 2002-03-12. The earliest are 23 source emails stamped `1979-12-31 16:00 -0800`, a known placeholder date in this corpus. |
