@@ -1,0 +1,131 @@
+# Enron Email Extraction, Deduplication & MCP Notification Pipeline
+
+This pipeline parses raw Enron emails (RFC 2822) into structured records and stores them in a normalized
+SQLite database. It then flags fuzzy duplicates and sends duplicate notices through a Gmail MCP server.
+Everything runs from one command: `python main.py`.
+
+> Status: **Task 1 (extraction) complete.** Tasks 2–4 are in progress.
+
+---
+
+## 1. Dataset & subset selection
+
+| | |
+|---|---|
+| Source | [Enron Email Dataset (CMU)](https://www.cs.cmu.edu/~enron/enron_mail_20150507.tar.gz) |
+| Subset | 5 mailboxes, **23,873 emails**. The spec's minimum is 5 mailboxes and 10,000 emails. |
+
+| Mailbox | Person / role | Emails |
+|---|---|---:|
+| `lay-k` | Kenneth Lay, Chairman & CEO | 5,937 |
+| `kitchen-l` | Louise Kitchen, President, Enron Americas | 5,546 |
+| `lavorato-j` | John Lavorato, CEO, Enron Americas | 4,685 |
+| `skilling-j` | Jeffrey Skilling, CEO | 4,139 |
+| `delainey-d` | David Delainey, CEO, Enron Energy Services | 3,566 |
+
+**Why these five:**
+- **They're senior executives who email each other**, so the same message often appears in more than one
+  mailbox.
+- **The folder structures vary.** Four mailboxes use Lotus Notes-style `all_documents` and
+  `discussion_threads` folders, which hold copies of inbox and sent mail. That gives duplicate detection
+  real duplicates to find. `kitchen-l` uses an Outlook-style layout with deeply nested folders
+  (`_americas/*`), which exercises the recursive traversal.
+- **The data covers many edge cases.** Lay's public profile brings in many external senders, which
+  means more varied header formats and encodings: 7 of the 8 files that aren't valid UTF-8 come from Lay's
+  and Skilling's mailboxes.
+- **It's 2.4× the minimum volume**, yet the full pipeline still runs in seconds.
+
+---
+
+## 2. Setup
+
+```bash
+# Python 3.10+ (tested on 3.10.20 and 3.12.14)
+python -m venv .venv && source .venv/bin/activate
+pip install -r requirements.txt
+
+# Dataset: download and extract only the 5 selected mailboxes into data/
+mkdir -p data && cd data
+curl -O https://www.cs.cmu.edu/~enron/enron_mail_20150507.tar.gz
+tar -xzf enron_mail_20150507.tar.gz maildir/lay-k maildir/skilling-j maildir/lavorato-j \
+    maildir/delainey-d maildir/kitchen-l
+cd ..
+```
+
+## 3. Running
+
+```bash
+python main.py                 # full pipeline (dry-run: no email is sent)
+python main.py --maildir PATH  # use a different maildir root
+```
+
+---
+
+## 4. Architecture
+
+```
+data/maildir/**  ──►  [1] extract.py  ──►  [2] storage.py  ──►  [3] dedup.py  ──►  [4] notify.py ──► MCP server ──► Gmail
+                         │                     │ enron.db            │                  │
+                         ▼                     ▼                     ▼                  ▼
+                   error_log.txt         (SQLite, schema.sql)  duplicates_report.csv  output/replies/*.eml
+                                                                                       output/send_log.csv
+```
+
+| Module | Responsibility |
+|---|---|
+| `main.py` | CLI entry point that runs the stages in order |
+| `pipeline/extract.py` | Task 1: find files, parse fields, log failures, report statistics |
+
+### Task 1: extraction design notes
+- **Parser.** Uses the stdlib `email` package with the lenient `compat32` policy, so malformed headers
+  never raise. Header values are RFC 2047-decoded and may arrive as `Header` objects when they contain
+  8-bit bytes.
+- **Enron-specific header unfolding.** The source wraps long headers in two different ways. A `\n\t`
+  wrap splits a word in the middle (`Commit\n\ttee` → `Committee`), so it's removed entirely. A `\r\n `
+  wrap falls at a word boundary, so the space is kept.
+- **Dates.** `parsedate_to_datetime` handles numeric offsets and US zone abbreviations. If it fails,
+  `dateutil` takes over with an explicit abbreviation map (PST/PDT/CST/CDT/EST/EDT/…). Everything is stored
+  as UTC `YYYY-MM-DD HH:MM:SS`.
+- **Addresses.** Parsed with `getaddresses` (with `strict=False` where the Python version supports it),
+  lowercased and deduplicated. When a list is too malformed to parse, a regex recovers the addresses.
+- **Body charset.** Decoded with the declared charset, then UTF-8, then cp1252, then latin-1, so decoding
+  can never fail.
+- **Body sections.** The earliest forward or reply marker splits the body. Forward markers are Lotus
+  `Forwarded by` lines, `Forwarded message` and `Begin forwarded message`. Reply markers are
+  `-----Original Message-----`, `On … wrote:`, Outlook `From:/Sent:` blocks and Lotus reply headers.
+  Everything after the marker goes to `forwarded_content` or `quoted_content`, and nested messages stay
+  inside that section. `>` lines are moved to `quoted_content`.
+- **`has_attachment`.** True for a multipart content type, a MIME boundary, `<<file.ext>>` placeholders or
+  Lotus `- file.doc` listing lines. The word "attached" on its own doesn't count because it produces too
+  many false positives.
+- **`headings`.** Found heuristically: underlined lines, numbered or markdown section titles, ALL-CAPS
+  title lines, and section labels such as `Agenda:`. Salutations, table rows and timestamps are excluded.
+- **Mandatory-field policy.** A missing header means a failed parse, logged with its reason. An empty
+  `Subject:` header counts as present, because 1,620 emails really have no subject.
+- **Robustness.** Each file is parsed inside its own try/except, so the run never stops on bad input. This
+  was tested with empty, binary, header-only, invalid-date and 5 MB single-line files.
+
+## 5. Results
+
+### Task 1: extraction (23,873 files, about 6 s)
+
+| Metric | Value |
+|---|---:|
+| Files found | 23,873 |
+| Parsed successfully | 22,596 (94.65%) |
+| Failed (logged to `error_log.txt`) | 1,277 |
+| ↳ no `To:` header (calendar entries, notes, drafts) | 1,276 |
+| ↳ no valid address in `From:` (`pep <performance.>`) | 1 |
+
+| Field | Completeness | Field | Completeness |
+|---|---:|---|---:|
+| message_id, date, from_address, to_addresses, source_file | 100% | x_cc | 27.05% |
+| subject (non-empty) | 92.88% | x_bcc | 0.07% |
+| body (non-empty primary body) | 95.10% | content_type | 100% |
+| cc_addresses | 26.95% | has_attachment (= True) | 8.76% |
+| bcc_addresses | 26.95%¹ | forwarded_content | 14.00% |
+| x_from, x_to, x_folder, x_origin | 100% | quoted_content | 23.05% |
+| | | headings | 16.16% |
+
+¹ In this corpus the `Bcc:` header is generally a copy of `Cc:`, a known artifact of how the dataset was
+converted. Both are stored exactly as parsed.
