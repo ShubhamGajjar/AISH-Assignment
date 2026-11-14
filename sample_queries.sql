@@ -85,7 +85,32 @@ ORDER BY emails_received DESC
 LIMIT 5;
 
 
--- Q6. Confirm the date-range query uses the index
+-- Q6. Duplicate detection summary (after Task 3)
+-- Expected output: 1 row: duplicate_groups 4121 | flagged_duplicates 9215 | avg_group_size 3.24
+SELECT COUNT(DISTINCT duplicate_of) AS duplicate_groups,
+       COUNT(*) AS flagged_duplicates,
+       ROUND(1.0 * (COUNT(*) + COUNT(DISTINCT duplicate_of)) / COUNT(DISTINCT duplicate_of), 2) AS avg_group_size
+FROM emails
+WHERE is_duplicate = 1;
+
+
+-- Q7. Largest duplicate groups: original, group size, latest duplicate, lowest similarity
+-- Expected output: 5 rows. Largest is "Approval for reviewer" from david.delainey@enron.com
+-- (68 emails, min similarity 91.19, a templated approval notice forwarded many times), then
+-- "New Kudlow Commentary" (29, 99.41), two "Your Approval is Overdue: Access Request ..."
+-- groups (17 and 13, 99.61) and "Staff Meeting" from kay.chapman@enron.com (16, 90.08).
+SELECT o.date AS original_date, o.from_address, o.subject,
+       COUNT(*) + 1 AS group_size,
+       MAX(d.date) AS latest_duplicate_date,
+       MIN(d.similarity_score) AS min_similarity
+FROM emails d
+JOIN emails o ON o.message_id = d.duplicate_of
+GROUP BY o.id
+ORDER BY group_size DESC, o.date
+LIMIT 5;
+
+
+-- Q8. Confirm the date-range query uses the index
 -- Expected output: one plan line: SEARCH emails USING INDEX idx_emails_date (date>? AND date<?)
 EXPLAIN QUERY PLAN
 SELECT date, from_address, subject FROM emails

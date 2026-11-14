@@ -4,7 +4,7 @@ This pipeline parses raw Enron emails (RFC 2822) into structured records and sto
 SQLite database. It then flags fuzzy duplicates and sends duplicate notices through a Gmail MCP server.
 Everything runs from one command: `python main.py`.
 
-> Status: **Tasks 1 (extraction) and 2 (database) complete.** Tasks 3–4 are in progress.
+> Status: **Tasks 1–3 (extraction, database, duplicate detection) complete.** Task 4 is in progress.
 
 ---
 
@@ -84,6 +84,7 @@ data/maildir/**  ──►  [1] extract.py  ──►  [2] storage.py  ──►
 | `pipeline/extract.py` | Task 1: find files, parse fields, log failures, report statistics |
 | `pipeline/storage.py` + `schema.sql` | Task 2: create the SQLite schema and load records with normalized recipients |
 | `sample_queries.sql` | Task 2: example queries, each with its expected output |
+| `pipeline/dedup.py` | Task 3: fuzzy duplicate detection, flagging in the DB, `duplicates_report.csv` |
 
 ### Task 1: extraction design notes
 - **Parser.** Uses the stdlib `email` package with the lenient `compat32` policy, so malformed headers
@@ -137,13 +138,45 @@ emails (1) ──< email_recipients >── (1) addresses
   - A row-level `CHECK` means a duplicate flag can never exist without its `duplicate_of` reference.
   - Foreign keys are enforced (`PRAGMA foreign_keys = ON`).
 - **Dates.** Stored as UTC text `YYYY-MM-DD HH:MM:SS`, which sorts chronologically. Range queries use
-  `idx_emails_date`, as Q6 in `sample_queries.sql` shows with `EXPLAIN QUERY PLAN`.
+  `idx_emails_date`, as Q8 in `sample_queries.sql` shows with `EXPLAIN QUERY PLAN`.
 - **Indexes.** `date`, `from_address` and `subject` are required by the spec. `email_recipients
   (address_id, recipient_type)` supports address lookups, and `duplicate_of` supports the Task 3 and 4
   joins.
 - **Transactions.** The whole load runs in one transaction, with a SAVEPOINT for each email. If an insert
   fails, only that email and its recipient rows are rolled back, the error is logged, and the load
   continues.
+
+### Task 3: duplicate detection design notes
+- **Definition (from the spec).** Two emails are duplicates when they have the same `from_address`, the
+  same subject after stripping leading `Re:`/`Fw:`/`Fwd:` prefixes (repeated forms such as
+  `RE: FW: Re[2]:` included), and content that is **≥ 90% similar**.
+- **Fuzzy library: [RapidFuzz](https://github.com/rapidfuzz/RapidFuzz)** (MIT licence, C++ core).
+  `fuzz.ratio` is the normalized Indel similarity, `2 × LCS / (len(a) + len(b)) × 100`. It's like
+  Python's `difflib.SequenceMatcher.ratio`, but exact rather than a heuristic, and much faster. Its
+  `score_cutoff` parameter skips pairs that can't reach the threshold.
+- **What gets compared.** The whole email content: the primary body plus forwarded and quoted content,
+  whitespace-normalized. Comparing only the primary body would score two pure forwards (both with an empty
+  primary body) as 100% similar even when they forward completely different emails.
+- **Blocking.** Only emails with the same (sender, normalized subject) can be duplicates, so the 22,596
+  emails split into 11,195 blocks, and fuzzy matching runs only inside the 3,924 blocks that hold 2 or more
+  emails. That is about 151k comparisons instead of about 255M for every possible pair, and the whole
+  step takes under 1 second.
+- **Clustering against the original.** Within a block, emails are taken in `(date, source_file)` order.
+  Each one is compared with the **original** (earliest email) of every existing group and joins the
+  best-scoring group at 90% or above. Otherwise it becomes the original of a new group. Every
+  `similarity_score` is therefore a score against the original, as the report requires. It also stops
+  groups from chaining (A≈B and B≈C while A≉C).
+- **Tie-break.** 93% of groups are folder copies with *identical* timestamps, so when dates are equal the
+  order is `source_file` ascending. The result is deterministic, and re-runs produce an identical report.
+- **Flagging.** The earliest email is the original. Every other member gets `is_duplicate = 1`,
+  `duplicate_of = <original message_id>` and `similarity_score`. The latest member is the notification
+  target (Task 4). Re-runs reset and recompute the dedup columns but never touch the notification
+  columns.
+- **Known limitation (an effect of the spec's definition, not a bug).** At 90% character similarity,
+  short templated notices that differ in a name or date also match. Examples are "Approval for reviewer"
+  forwarded for different employees (91%), and a "Staff Meeting" reminder vs. its cancellation (90.1%).
+  The Task 4 notification covers this: the sender can reply `CONFIRM` to restore the email. The
+  threshold can be changed with `--threshold`.
 
 ## 5. Results
 
@@ -182,3 +215,24 @@ converted. Both are stored exactly as parsed.
 | Recipient lists rebuilt from the DB vs. parser output | 22,596 of 22,596 match, including order |
 | `PRAGMA integrity_check` / `foreign_key_check` | ok / 0 violations |
 | Date range (UTC) | 1980-01-01 → 2002-03-12. The earliest are 23 source emails stamped `1979-12-31 16:00 -0800`, a known placeholder date in this corpus. |
+
+### Task 3: duplicate detection (about 1 s)
+
+| Metric | Value |
+|---|---:|
+| Emails scanned | 22,596 |
+| (sender, subject) blocks / blocks with 2+ emails | 11,195 / 3,924 |
+| Fuzzy comparisons | 151,558 |
+| **Duplicate groups found** | **4,121** |
+| **Emails flagged as duplicate** | **9,215** (rows in `duplicates_report.csv`) |
+| ↳ exact copies (100%) | 8,440 (mostly the same email stored in `inbox`, `all_documents` and `discussion_threads`) |
+| ↳ fuzzy (90–99.99%) | 775 (98–99.99%: 257 · 95–97.99%: 185 · 90–94.99%: 333) |
+| **Average group size** | **3.24** emails (original + duplicates) |
+| Groups with more than 2 emails / largest group | 3,128 / 68 |
+
+Checks:
+- Flagged rows in the DB equal the report rows (9,215).
+- Every `duplicate_of` points to an original that is not itself flagged.
+- No duplicate is older than its original.
+- No duplicate has a different sender from its original.
+- The report is identical across re-runs.

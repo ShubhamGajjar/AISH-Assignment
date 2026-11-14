@@ -12,6 +12,7 @@ import time
 
 from pipeline.extract import run_extraction
 from pipeline import storage
+from pipeline.dedup import DEFAULT_THRESHOLD, run_dedup
 
 log = logging.getLogger("pipeline")
 
@@ -27,6 +28,10 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
                         help="SQLite database file (default: enron.db)")
     parser.add_argument("--fresh", action="store_true",
                         help="delete and rebuild the database instead of loading incrementally")
+    parser.add_argument("--threshold", type=float, default=DEFAULT_THRESHOLD,
+                        help="minimum body similarity (0-100) for duplicates (default: 90)")
+    parser.add_argument("--report", default="duplicates_report.csv",
+                        help="duplicate summary report (default: duplicates_report.csv)")
     return parser.parse_args(argv)
 
 
@@ -54,9 +59,16 @@ def main(argv: list[str] | None = None) -> int:
     try:
         storage.init_db(conn)
         storage.store_records(conn, records)
+        log.info("Storage finished in %.1fs", time.perf_counter() - step)
+        del records  # free memory before the dedup scan
+
+        step = time.perf_counter()
+        log.info("[3/4] Detecting duplicates (threshold %.0f%%)", args.threshold)
+        run_dedup(conn, args.report, args.threshold)
+        log.info("Duplicate detection finished in %.1fs; report written to %s",
+                 time.perf_counter() - step, args.report)
     finally:
         conn.close()
-    log.info("Storage finished in %.1fs", time.perf_counter() - step)
     return 0
 
 
