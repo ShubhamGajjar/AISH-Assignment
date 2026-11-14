@@ -1,0 +1,28 @@
+From: Email Deduplication System <dedup-system@example.com>
+To: l..nicolay@enron.com
+Subject: [Duplicate Notice] Re: Update on RTOs -- Today's FERC meeting
+Date: Sat, 14 Nov 2026 19:06:11 +0000
+References: <28123363.1075863343225.JavaMail.evans@thyme>
+Content-Type: text/plain; charset="utf-8"
+Content-Transfer-Encoding: 7bit
+MIME-Version: 1.0
+
+This is an automated notification from the Email Deduplication System.
+
+Your email has been identified as a potential duplicate:
+
+  Your Email (Flagged):
+    Message-ID:  <28123363.1075863343225.JavaMail.evans@thyme>
+    Date Sent:   2001-10-24 17:54:31 UTC
+    Subject:     Update on RTOs -- Today's FERC meeting
+
+  Original Email on Record:
+    Message-ID:  <23701596.1075840894860.JavaMail.evans@thyme>
+    Date Sent:   2001-10-24 17:54:31 UTC
+
+  Similarity Score: 100.00%
+
+If this was NOT a duplicate and you intended to send this email,
+please reply with CONFIRM to restore it to active status.
+
+No action is required if this is indeed a duplicate.

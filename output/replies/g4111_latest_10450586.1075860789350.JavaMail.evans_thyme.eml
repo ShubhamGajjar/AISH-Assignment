@@ -1,0 +1,28 @@
+From: Email Deduplication System <dedup-system@example.com>
+To: georgeanne.hodges@enron.com
+Subject: [Duplicate Notice] Re: Expense Reports
+Date: Sat, 14 Nov 2026 19:06:12 +0000
+References: <10450586.1075860789350.JavaMail.evans@thyme>
+Content-Type: text/plain; charset="utf-8"
+Content-Transfer-Encoding: 7bit
+MIME-Version: 1.0
+
+This is an automated notification from the Email Deduplication System.
+
+Your email has been identified as a potential duplicate:
+
+  Your Email (Flagged):
+    Message-ID:  <10450586.1075860789350.JavaMail.evans@thyme>
+    Date Sent:   2002-02-05 17:06:41 UTC
+    Subject:     Expense Reports
+
+  Original Email on Record:
+    Message-ID:  <23710511.1075840954868.JavaMail.evans@thyme>
+    Date Sent:   2002-02-05 17:06:41 UTC
+
+  Similarity Score: 100.00%
+
+If this was NOT a duplicate and you intended to send this email,
+please reply with CONFIRM to restore it to active status.
+
+No action is required if this is indeed a duplicate.

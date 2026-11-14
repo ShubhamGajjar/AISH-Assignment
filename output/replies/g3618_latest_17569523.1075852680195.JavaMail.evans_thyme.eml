@@ -1,0 +1,28 @@
+From: Email Deduplication System <dedup-system@example.com>
+To: jdent@mmcable.com
+Subject: [Duplicate Notice] Re: [smu-betas] EWooglin
+Date: Sat, 14 Nov 2026 19:06:11 +0000
+References: <17569523.1075852680195.JavaMail.evans@thyme>
+Content-Type: text/plain; charset="utf-8"
+Content-Transfer-Encoding: 7bit
+MIME-Version: 1.0
+
+This is an automated notification from the Email Deduplication System.
+
+Your email has been identified as a potential duplicate:
+
+  Your Email (Flagged):
+    Message-ID:  <17569523.1075852680195.JavaMail.evans@thyme>
+    Date Sent:   2001-08-16 15:00:00 UTC
+    Subject:     Re: [smu-betas] EWooglin
+
+  Original Email on Record:
+    Message-ID:  <11973436.1075852680219.JavaMail.evans@thyme>
+    Date Sent:   2001-08-16 14:58:31 UTC
+
+  Similarity Score: 93.85%
+
+If this was NOT a duplicate and you intended to send this email,
+please reply with CONFIRM to restore it to active status.
+
+No action is required if this is indeed a duplicate.

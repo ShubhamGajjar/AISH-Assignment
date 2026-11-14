@@ -1,0 +1,28 @@
+From: Email Deduplication System <dedup-system@example.com>
+To: louise.kitchen@enron.com
+Subject: [Duplicate Notice] Re: FW: List of Topn 50 counterparties
+Date: Sat, 14 Nov 2026 19:06:12 +0000
+References: <10462809.1075840965054.JavaMail.evans@thyme>
+Content-Type: text/plain; charset="utf-8"
+Content-Transfer-Encoding: 7bit
+MIME-Version: 1.0
+
+This is an automated notification from the Email Deduplication System.
+
+Your email has been identified as a potential duplicate:
+
+  Your Email (Flagged):
+    Message-ID:  <10462809.1075840965054.JavaMail.evans@thyme>
+    Date Sent:   2002-01-04 17:52:54 UTC
+    Subject:     FW: List of Topn 50 counterparties
+
+  Original Email on Record:
+    Message-ID:  <26831914.1075840965393.JavaMail.evans@thyme>
+    Date Sent:   2002-01-03 21:49:36 UTC
+
+  Similarity Score: 95.49%
+
+If this was NOT a duplicate and you intended to send this email,
+please reply with CONFIRM to restore it to active status.
+
+No action is required if this is indeed a duplicate.

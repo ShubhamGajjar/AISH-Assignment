@@ -4,7 +4,7 @@ This pipeline parses raw Enron emails (RFC 2822) into structured records and sto
 SQLite database. It then flags fuzzy duplicates and sends duplicate notices through a Gmail MCP server.
 Everything runs from one command: `python main.py`.
 
-> Status: **Tasks 1–3 (extraction, database, duplicate detection) complete.** Task 4 is in progress.
+> Status: **All 4 tasks complete**, including a verified live send through the Gmail MCP server.
 
 ---
 
@@ -52,19 +52,38 @@ tar -xzf enron_mail_20150507.tar.gz maildir/lay-k maildir/skilling-j maildir/lav
 cd ..
 ```
 
+### Gmail MCP server (needed only for `--send-live`)
+1. Turn on **2-Step Verification** for your Google account, then create an **App Password** at
+   <https://myaccount.google.com/apppasswords>.
+2. `cp mcp_config.json.example mcp_config.json` and fill in `GMAIL_ADDRESS`, `GMAIL_APP_PASSWORD` and
+   `GMAIL_ALLOWED_RECIPIENTS` (your own address). `mcp_config.json` is gitignored.
+3. Optional: register the same server with Claude Code:
+   ```bash
+   claude mcp add gmail --scope local \
+     -e GMAIL_ADDRESS=you@gmail.com -e GMAIL_APP_PASSWORD='xxxx xxxx xxxx xxxx' \
+     -e GMAIL_ALLOWED_RECIPIENTS=you@gmail.com \
+     -- "$PWD/.venv/bin/python" "$PWD/mcp_server/gmail_server.py"
+   ```
+The full walkthrough is in `AI_USAGE.md` §6.
+
 ## 3. Running
 
 ```bash
-python main.py                 # full pipeline (dry-run: no email is sent)
-python main.py --fresh         # delete and rebuild enron.db from scratch
-python main.py --maildir PATH  # use a different maildir root
-python main.py --db FILE       # use a different SQLite file (default: enron.db)
+python main.py                 # full pipeline, dry run: writes output/replies/*.eml, sends nothing
+python main.py --send-live     # also send up to 5 notices through the Gmail MCP server
+python main.py --send-live --limit 1     # send just one (--limit 0 = no limit)
+python main.py --send-live --notify-to me@gmail.com   # recipient override (default: GMAIL_ADDRESS)
+python main.py --fresh         # delete and rebuild enron.db (also resets notification_sent)
+python main.py --threshold 95  # stricter duplicate similarity (default 90)
+python main.py --help          # all options (paths for the DB, logs, report, replies, MCP config)
 
 sqlite3 -header -column enron.db < sample_queries.sql   # run the sample queries
 ```
 
 Without `--fresh`, loading is incremental. Emails whose `message_id` is already stored are skipped by
-the UNIQUE constraint, so a second run inserts 0 rows.
+the UNIQUE constraint, so a second run inserts 0 rows. Live sends are recorded in the DB
+(`notification_sent`), so later `--send-live` runs continue with the next groups and never send the
+same notice twice.
 
 ---
 
@@ -85,6 +104,9 @@ data/maildir/**  ──►  [1] extract.py  ──►  [2] storage.py  ──►
 | `pipeline/storage.py` + `schema.sql` | Task 2: create the SQLite schema and load records with normalized recipients |
 | `sample_queries.sql` | Task 2: example queries, each with its expected output |
 | `pipeline/dedup.py` | Task 3: fuzzy duplicate detection, flagging in the DB, `duplicates_report.csv` |
+| `pipeline/notify.py` | Task 4: notification template, `.eml` drafts, MCP client for live sends, `send_log.csv` |
+| `mcp_server/gmail_server.py` | Task 4: custom Gmail MCP server (stdio) exposing `send_email` |
+| `mcp_config.json.example` | Task 4: MCP server config template with placeholder credentials |
 
 ### Task 1: extraction design notes
 - **Parser.** Uses the stdlib `email` package with the lenient `compat32` policy, so malformed headers
@@ -178,6 +200,31 @@ emails (1) ──< email_recipients >── (1) addresses
   The Task 4 notification covers this: the sender can reply `CONFIRM` to restore the email. The
   threshold can be changed with `--threshold`.
 
+### Task 4: notification design notes
+- **Template.** The body follows the spec's §4.2 template character for character (checked against the
+  assignment document). The headers are `To`, `Subject`, `Date` (the time of sending) and
+  `References: <message_id of the flagged duplicate>`.
+- **Subject.** `[Duplicate Notice] Re: <original subject>`. Any leading `Re:` on the original is removed
+  first, so the result never says `Re: Re:`. RFC 5322 §3.6.5 says only one `Re: ` should be used.
+- **Dry run (the default).** Writes `output/replies/` with **one `.eml` per flagged duplicate**, as the
+  deliverable requires. Each is addressed to that email's real sender, as in the template. File names
+  show the group and role: `g0001_latest_<message-id>.eml` is the group's notification target, and
+  `g0001_flagged_<message-id>.eml` is any other flagged member.
+- **Live (`--send-live`).** Sends **one notice per group, about its latest duplicate**, as spec §4.2
+  says. The pipeline is an MCP client: it launches `mcp_server/gmail_server.py` over stdio, checks the
+  tool list, and calls `send_email`.
+  - Each attempt is appended to `output/send_log.csv`.
+  - A success sets `notification_sent = 1` and `notification_date`.
+  - Failures are logged with their exact reason, and the run continues.
+- **Safety and quota.**
+  - Live notices go to the operator's Gmail (`--notify-to`, `$NOTIFY_TO`, or `GMAIL_ADDRESS`), never to
+    the real Enron-era senders. The intended recipient is kept in `X-Original-To`.
+  - The server can also enforce a recipient allowlist.
+  - `--limit` (default 5) and a 1-second gap between sends keep a run well inside Gmail's quota of about
+    500 messages per day.
+- **Robustness.** A missing or invalid MCP config, a failed login or a network error is logged, and the
+  rest of the pipeline still completes.
+
 ## 5. Results
 
 ### Task 1: extraction (23,873 files, about 6 s)
@@ -236,3 +283,14 @@ Checks:
 - No duplicate is older than its original.
 - No duplicate has a different sender from its original.
 - The report is identical across re-runs.
+
+### Task 4: notifications
+
+| Check | Result |
+|---|---|
+| Draft `.eml` files in `output/replies/` | 9,215 (one per flagged duplicate) |
+| Notification targets (`*_latest_*.eml`, one per group) | 4,121, each matching the latest duplicate in the DB |
+| Draft body vs. the spec's §4.2 template | Identical structure, character for character |
+| MCP round trip (pipeline → server → `send_email`) | Works. Offline tests return clear errors for missing credentials, a recipient not on the allowlist, and an unreachable SMTP server, with DB state unchanged. |
+| Live send (`--send-live --limit 1`) | ✅ Sent 2026-11-14 19:06:12 UTC. Group 1's notice (intended for david.delainey@enron.com) was redirected to the operator's Gmail. `notification_sent = 1` is set, and the row is in `output/send_log.csv`. |
+| Live send from Claude Code (same MCP server) | ✅ Group 2's notice, Message-ID `<179468551110.13604.8733311295844959285@gmail.com>` (see `AI_USAGE.md` §6.3) |

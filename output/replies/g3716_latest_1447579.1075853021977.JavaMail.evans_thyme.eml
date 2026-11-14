@@ -1,0 +1,29 @@
+From: Email Deduplication System <dedup-system@example.com>
+To: louise.kitchen@enron.com
+Subject:
+ [Duplicate Notice] Re: Enron Management Conference - Home Video Project
+Date: Sat, 14 Nov 2026 19:06:11 +0000
+References: <1447579.1075853021977.JavaMail.evans@thyme>
+Content-Type: text/plain; charset="utf-8"
+Content-Transfer-Encoding: 7bit
+MIME-Version: 1.0
+
+This is an automated notification from the Email Deduplication System.
+
+Your email has been identified as a potential duplicate:
+
+  Your Email (Flagged):
+    Message-ID:  <1447579.1075853021977.JavaMail.evans@thyme>
+    Date Sent:   2001-09-26 17:59:04 UTC
+    Subject:     RE: Enron Management Conference - Home Video Project
+
+  Original Email on Record:
+    Message-ID:  <2507568.1075853022002.JavaMail.evans@thyme>
+    Date Sent:   2001-09-26 17:51:20 UTC
+
+  Similarity Score: 93.82%
+
+If this was NOT a duplicate and you intended to send this email,
+please reply with CONFIRM to restore it to active status.
+
+No action is required if this is indeed a duplicate.

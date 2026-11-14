@@ -1,0 +1,28 @@
+From: Email Deduplication System <dedup-system@example.com>
+To: charles.vetters@enron.com
+Subject: [Duplicate Notice] Re: Transformer Monitoring
+Date: Sat, 14 Nov 2026 19:06:11 +0000
+References: <13788843.1075852998805.JavaMail.evans@thyme>
+Content-Type: text/plain; charset="utf-8"
+Content-Transfer-Encoding: 7bit
+MIME-Version: 1.0
+
+This is an automated notification from the Email Deduplication System.
+
+Your email has been identified as a potential duplicate:
+
+  Your Email (Flagged):
+    Message-ID:  <13788843.1075852998805.JavaMail.evans@thyme>
+    Date Sent:   2001-08-08 20:38:33 UTC
+    Subject:     Transformer Monitoring
+
+  Original Email on Record:
+    Message-ID:  <25209971.1075840873837.JavaMail.evans@thyme>
+    Date Sent:   2001-08-08 20:38:33 UTC
+
+  Similarity Score: 100.00%
+
+If this was NOT a duplicate and you intended to send this email,
+please reply with CONFIRM to restore it to active status.
+
+No action is required if this is indeed a duplicate.

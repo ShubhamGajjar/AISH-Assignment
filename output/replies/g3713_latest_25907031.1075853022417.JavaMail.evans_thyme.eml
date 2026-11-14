@@ -1,0 +1,28 @@
+From: Email Deduplication System <dedup-system@example.com>
+To: louise.kitchen@enron.com
+Subject: [Duplicate Notice] Re: warning re: Colin Good
+Date: Sat, 14 Nov 2026 19:06:11 +0000
+References: <25907031.1075853022417.JavaMail.evans@thyme>
+Content-Type: text/plain; charset="utf-8"
+Content-Transfer-Encoding: 7bit
+MIME-Version: 1.0
+
+This is an automated notification from the Email Deduplication System.
+
+Your email has been identified as a potential duplicate:
+
+  Your Email (Flagged):
+    Message-ID:  <25907031.1075853022417.JavaMail.evans@thyme>
+    Date Sent:   2001-09-26 14:05:43 UTC
+    Subject:     FW: warning re: Colin Good
+
+  Original Email on Record:
+    Message-ID:  <17171879.1075853022439.JavaMail.evans@thyme>
+    Date Sent:   2001-09-26 14:05:24 UTC
+
+  Similarity Score: 95.07%
+
+If this was NOT a duplicate and you intended to send this email,
+please reply with CONFIRM to restore it to active status.
+
+No action is required if this is indeed a duplicate.

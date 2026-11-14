@@ -1,0 +1,28 @@
+From: Email Deduplication System <dedup-system@example.com>
+To: david.oxley@enron.com
+Subject: [Duplicate Notice] Re: RETENTION of select individuals
+Date: Sat, 14 Nov 2026 19:06:12 +0000
+References: <30585347.1075840851628.JavaMail.evans@thyme>
+Content-Type: text/plain; charset="utf-8"
+Content-Transfer-Encoding: 7bit
+MIME-Version: 1.0
+
+This is an automated notification from the Email Deduplication System.
+
+Your email has been identified as a potential duplicate:
+
+  Your Email (Flagged):
+    Message-ID:  <30585347.1075840851628.JavaMail.evans@thyme>
+    Date Sent:   2001-12-10 00:07:39 UTC
+    Subject:     RE: RETENTION of select individuals
+
+  Original Email on Record:
+    Message-ID:  <26710297.1075840836809.JavaMail.evans@thyme>
+    Date Sent:   2001-12-07 13:05:28 UTC
+
+  Similarity Score: 90.11%
+
+If this was NOT a duplicate and you intended to send this email,
+please reply with CONFIRM to restore it to active status.
+
+No action is required if this is indeed a duplicate.

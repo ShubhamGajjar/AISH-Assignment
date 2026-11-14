@@ -1,0 +1,28 @@
+From: Email Deduplication System <dedup-system@example.com>
+To: stephen.douglas@enron.com
+Subject: [Duplicate Notice] Re: FW: Tax reserve on Allegheny Peakers
+Date: Sat, 14 Nov 2026 19:06:11 +0000
+References: <32758992.1075840808775.JavaMail.evans@thyme>
+Content-Type: text/plain; charset="utf-8"
+Content-Transfer-Encoding: 7bit
+MIME-Version: 1.0
+
+This is an automated notification from the Email Deduplication System.
+
+Your email has been identified as a potential duplicate:
+
+  Your Email (Flagged):
+    Message-ID:  <32758992.1075840808775.JavaMail.evans@thyme>
+    Date Sent:   2001-05-03 01:32:00 UTC
+    Subject:     RE: FW: Tax reserve on Allegheny Peakers
+
+  Original Email on Record:
+    Message-ID:  <19260907.1075840808882.JavaMail.evans@thyme>
+    Date Sent:   2001-05-03 00:07:00 UTC
+
+  Similarity Score: 92.91%
+
+If this was NOT a duplicate and you intended to send this email,
+please reply with CONFIRM to restore it to active status.
+
+No action is required if this is indeed a duplicate.
