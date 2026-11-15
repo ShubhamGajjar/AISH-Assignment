@@ -4,7 +4,8 @@ This pipeline parses raw Enron emails (RFC 2822) into structured records and sto
 SQLite database. It then flags fuzzy duplicates and sends duplicate notices through a Gmail MCP server.
 Everything runs from one command: `python main.py`.
 
-> Status: **All 4 tasks complete**, including a verified live send through the Gmail MCP server.
+> Status: **All 4 tasks complete**, including a verified live send through the Gmail MCP server,
+> plus performance optimizations (parallel parsing and incremental re-runs).
 
 ---
 
@@ -75,15 +76,25 @@ python main.py --send-live --limit 1     # send just one (--limit 0 = no limit)
 python main.py --send-live --notify-to me@gmail.com   # recipient override (default: GMAIL_ADDRESS)
 python main.py --fresh         # delete and rebuild enron.db (also resets notification_sent)
 python main.py --threshold 95  # stricter duplicate similarity (default 90)
+python main.py --workers 4     # parsing processes (default: CPU count, max 8; 1 = single process)
 python main.py --help          # all options (paths for the DB, logs, report, replies, MCP config)
 
 sqlite3 -header -column enron.db < sample_queries.sql   # run the sample queries
 ```
 
-Without `--fresh`, loading is incremental. Emails whose `message_id` is already stored are skipped by
-the UNIQUE constraint, so a second run inserts 0 rows. Live sends are recorded in the DB
-(`notification_sent`), so later `--send-live` runs continue with the next groups and never send the
-same notice twice.
+**Incremental loading.** Without `--fresh`, files already stored in the database (matched by
+`source_file`) are not parsed again, so a re-run parses only new files. `UNIQUE(message_id)` remains a
+second safeguard, so a re-run inserts 0 rows.
+- Files that failed to parse are never stored, so they are re-parsed on every run and `error_log.txt`
+  stays complete.
+- A file edited after it was stored is not re-read. Use `--fresh` to reload everything.
+- Live sends are recorded in the DB (`notification_sent`), so later `--send-live` runs continue with the
+  next groups and never send the same notice twice.
+
+**Exit codes.**
+- `0`: success. Malformed emails are expected; they are logged and are not an error.
+- `1`: the maildir is missing, or live sending was aborted or had a failed send. The other stages still
+  complete and the details are logged, so scripts and CI can detect the failure.
 
 ---
 
@@ -223,11 +234,25 @@ emails (1) ──< email_recipients >── (1) addresses
   - `--limit` (default 5) and a 1-second gap between sends keep a run well inside Gmail's quota of about
     500 messages per day.
 - **Robustness.** A missing or invalid MCP config, a failed login or a network error is logged, and the
-  rest of the pipeline still completes.
+  rest of the pipeline still completes. The run then exits with code 1.
+
+### Performance design notes (optimization phase)
+- **Parallel parsing.** Each email file parses independently, so extraction spreads the files over a
+  process pool (`concurrent.futures.ProcessPoolExecutor`, 64 files per task).
+  - `map` returns results in input order, so records, database ids and `error_log.txt` are identical to a
+    single-process run.
+  - The default is the CPU count, capped at 8: the speed-up flattens out beyond 8 processes and each
+    worker costs memory.
+  - Batches under 1,000 files are parsed in-process, because starting workers costs more than it saves.
+  - If the pool itself fails, the batch is parsed again in a single process, so the pipeline never stops.
+- **Incremental re-runs.** Before extraction, the pipeline reads the stored `source_file` values (a UNIQUE,
+  indexed column) and skips those files.
+  - Duplicate detection still runs over the whole database, because new emails can change groups.
+  - Notification state is kept.
 
 ## 5. Results
 
-### Task 1: extraction (23,873 files, about 6 s)
+### Task 1: extraction (23,873 files, about 1 s with 8 worker processes)
 
 | Metric | Value |
 |---|---:|
@@ -257,7 +282,8 @@ converted. Both are stored exactly as parsed.
 | `emails` rows | 22,596 (equal to the parsed count) |
 | `addresses` (distinct) | 12,082 |
 | `email_recipients` links | 192,006 |
-| Second run without `--fresh` | 0 inserted, 22,596 skipped by `UNIQUE(message_id)` |
+| Second run without `--fresh` | 22,596 files skipped before parsing (already stored), 0 inserted |
+| Adding a mailbox to an existing DB | Only its 3,530 new emails are parsed and inserted. The final DB matches a full fresh run. |
 | Inserting a duplicate `message_id` by hand | Rejected: `UNIQUE constraint failed: emails.message_id` |
 | Recipient lists rebuilt from the DB vs. parser output | 22,596 of 22,596 match, including order |
 | `PRAGMA integrity_check` / `foreign_key_check` | ok / 0 violations |
@@ -294,3 +320,21 @@ Checks:
 | MCP round trip (pipeline → server → `send_email`) | Works. Offline tests return clear errors for missing credentials, a recipient not on the allowlist, and an unreachable SMTP server, with DB state unchanged. |
 | Live send (`--send-live --limit 1`) | ✅ Sent 2026-11-14 19:06:12 UTC. Group 1's notice (intended for david.delainey@enron.com) was redirected to the operator's Gmail. `notification_sent = 1` is set, and the row is in `output/send_log.csv`. |
 | Live send from Claude Code (same MCP server) | ✅ Group 2's notice, Message-ID `<179468551110.13604.8733311295844959285@gmail.com>` (see `AI_USAGE.md` §6.3) |
+
+### Performance: before vs. after the optimization phase
+Measured on an 18-core machine with a warm file cache; each figure is the range over two runs.
+
+| Run | Extraction before → after | Full pipeline before → after |
+|---|---:|---:|
+| Fresh build (`--fresh`) | 5.1–5.4 s → **1.0 s** (8 workers, about 24k files/s) | 12.2–12.9 s → **8.2–8.5 s** |
+| Re-run on an existing DB | 5.3–5.5 s → **0.2 s** (22,596 files skipped) | 10.5–10.7 s → **5.2–5.4 s** |
+
+The other stages are unchanged: storage about 2.2 s on a fresh build, dedup about 0.9 s, and drafts
+about 4.2 s.
+
+**Checks:**
+- With 8 workers and with `--workers 1`, the `emails`, `addresses` and `email_recipients` tables are
+  identical to the single-process baseline, ids included.
+- `duplicates_report.csv` is byte-identical.
+- `error_log.txt` is identical apart from its timestamp column.
+- The results are the same on Python 3.10.20, where the processes are started with `spawn`.

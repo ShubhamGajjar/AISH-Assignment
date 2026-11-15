@@ -4,6 +4,10 @@ Discovers every raw email file under an Enron ``maildir`` tree, parses each one 
 structured record (mandatory + optional fields), logs parse failures, and reports
 extraction statistics. A malformed file never stops the run: every exception is caught,
 recorded with its reason, and the file is skipped.
+
+Files are parsed in parallel across worker processes (results keep the sorted input order,
+so output is identical to a single-process run), and files already stored in the database
+can be skipped so that re-runs only parse new files.
 """
 from __future__ import annotations
 
@@ -11,6 +15,7 @@ import logging
 import os
 import re
 from collections import Counter
+from concurrent.futures import ProcessPoolExecutor
 from dataclasses import dataclass, field
 from datetime import datetime, timezone
 from email import message_from_bytes
@@ -18,7 +23,7 @@ from email.header import decode_header
 from email.message import Message
 from email.policy import compat32
 from email.utils import getaddresses, parsedate_to_datetime
-from typing import Iterator, Optional
+from typing import Collection, Iterator, Optional
 
 from dateutil import parser as date_parser
 from dateutil.tz import tzoffset
@@ -117,6 +122,7 @@ class ParseError(Exception):
 @dataclass
 class ExtractionStats:
     files_found: int = 0
+    skipped_stored: int = 0    # already in the database (incremental re-run), not parsed
     parsed: int = 0
     failed: int = 0
     failure_reasons: Counter = field(default_factory=Counter)
@@ -433,34 +439,71 @@ def _is_present(value) -> bool:
 # =========================================================================================
 # Runner
 # =========================================================================================
-def run_extraction(maildir: str, error_log_path: str) -> tuple[list[dict], ExtractionStats]:
-    """Parse every file under ``maildir``. Returns (records, stats); writes the error log."""
+# Below this many files, starting worker processes costs more than it saves.
+MIN_PARALLEL_FILES = 1000
+_CHUNKSIZE = 64  # files per task sent to a worker: fewer round trips between processes
+
+
+def _parse_path(item: tuple[str, str]) -> tuple:
+    """Parse one file. Runs inside a worker process, so it never raises:
+    returns ``("ok", record)`` or ``("fail", source_file, reason)``."""
+    path, source_file = item
+    try:
+        with open(path, "rb") as fh:
+            return ("ok", parse_email(fh.read(), source_file))
+    except ParseError as exc:
+        return ("fail", source_file, str(exc))
+    except Exception as exc:  # never crash on malformed input
+        return ("fail", source_file, f"unexpected error: {type(exc).__name__}: {exc}")
+
+
+def _parse_all(items: list[tuple[str, str]], workers: int) -> list[tuple]:
+    """Parse results in input order, spread over ``workers`` processes when worthwhile.
+    If the process pool itself fails, the batch is parsed again in a single process."""
+    if workers > 1 and len(items) >= MIN_PARALLEL_FILES:
+        try:
+            with ProcessPoolExecutor(max_workers=workers) as pool:
+                results = list(pool.map(_parse_path, items, chunksize=_CHUNKSIZE))
+            log.info("Parsed %d files across %d worker processes", len(items), workers)
+            return results
+        except Exception as exc:  # e.g. BrokenProcessPool, OSError: never crash the pipeline
+            log.warning("Parallel parsing failed (%s: %s); falling back to a single process",
+                        type(exc).__name__, exc)
+    return [_parse_path(item) for item in items]
+
+
+def run_extraction(maildir: str, error_log_path: str, workers: int = 1,
+                   skip: Collection[str] = frozenset()) -> tuple[list[dict], ExtractionStats]:
+    """Parse every file under ``maildir`` whose ``source_file`` is not in ``skip`` (files
+    already stored by an earlier run). Returns (records, stats); writes the error log."""
     stats = ExtractionStats()
     records: list[dict] = []
     now = datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
 
+    items: list[tuple[str, str]] = []
+    for path in discover_files(maildir):
+        stats.files_found += 1
+        source_file = to_source_file(path, maildir)
+        if source_file in skip:
+            stats.skipped_stored += 1
+        else:
+            items.append((path, source_file))
+
     with open(error_log_path, "w", encoding="utf-8") as error_log:
         error_log.write("# timestamp\tsource_file\treason\n")
-        for path in discover_files(maildir):
-            stats.files_found += 1
-            source_file = to_source_file(path, maildir)
-            try:
-                with open(path, "rb") as fh:
-                    record = parse_email(fh.read(), source_file)
-            except ParseError as exc:
-                reason = str(exc)
-            except Exception as exc:  # never crash on malformed input
-                reason = f"unexpected error: {type(exc).__name__}: {exc}"
-            else:
+        for result in _parse_all(items, workers):
+            if result[0] == "ok":
+                record = result[1]
                 records.append(record)
                 stats.parsed += 1
                 for name in ALL_FIELDS:
                     if _is_present(record[name]):
                         stats.field_present[name] += 1
-                continue
-            stats.failed += 1
-            stats.failure_reasons[_reason_category(reason)] += 1
-            error_log.write(f"{now}\t{source_file}\t{reason}\n")
+            else:
+                _, source_file, reason = result
+                stats.failed += 1
+                stats.failure_reasons[_reason_category(reason)] += 1
+                error_log.write(f"{now}\t{source_file}\t{reason}\n")
 
     log_stats(stats)
     return records, stats
@@ -475,11 +518,17 @@ def log_stats(stats: ExtractionStats) -> None:
     log.info("=" * 64)
     log.info("EXTRACTION STATISTICS")
     log.info("  Total files found : %6d", stats.files_found)
+    log.info("  Already in DB     : %6d  (skipped; --fresh re-parses everything)",
+             stats.skipped_stored)
     log.info("  Parsed OK         : %6d", stats.parsed)
     log.info("  Failed            : %6d", stats.failed)
     for reason, count in stats.failure_reasons.most_common():
         log.info("      %6d  %s", count, reason)
-    log.info("  Field completeness (share of parsed records with a non-empty value):")
+    if not stats.parsed:
+        log.info("  Field completeness: no new records parsed (use --fresh for full field statistics)")
+        log.info("=" * 64)
+        return
+    log.info("  Field completeness (share of records parsed this run with a non-empty value):")
     for name, pct in stats.completeness().items():
         kind = "mandatory" if name in MANDATORY_FIELDS else "optional "
         note = "  (share = True)" if name == "has_attachment" else ""

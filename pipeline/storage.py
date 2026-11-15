@@ -4,6 +4,7 @@ Creates the SQLite database from ``schema.sql`` and loads extracted records into
 one ``emails`` row per record, with to/cc/bcc addresses normalized into ``addresses``
 and ``email_recipients``. ``INSERT OR IGNORE`` on the UNIQUE ``message_id`` means an
 email that is already stored is skipped rather than duplicated, so re-runs are safe.
+``stored_source_files`` lets a re-run skip parsing the files that are already loaded.
 """
 from __future__ import annotations
 
@@ -55,6 +56,11 @@ def reset_database(db_path: str) -> None:
 
 def init_db(conn: sqlite3.Connection, schema_path: Path = SCHEMA_PATH) -> None:
     conn.executescript(schema_path.read_text(encoding="utf-8"))
+
+
+def stored_source_files(conn: sqlite3.Connection) -> frozenset[str]:
+    """``source_file`` of every stored email (UNIQUE column, so the lookup uses its index)."""
+    return frozenset(row[0] for row in conn.execute("SELECT source_file FROM emails"))
 
 
 def _address_cache(conn: sqlite3.Connection) -> dict[str, int]:

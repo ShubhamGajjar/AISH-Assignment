@@ -2,6 +2,12 @@
 
     python main.py                         # full pipeline, dry-run (no email is sent)
     python main.py --send-live [--limit N] # also send notices via the Gmail MCP server
+
+Re-runs are incremental: files already stored in the database are not parsed again
+(``--fresh`` rebuilds everything). Parsing runs across ``--workers`` processes.
+
+Exit codes: 0 = success (malformed emails are expected and logged, not an error);
+            1 = maildir not found, or live sending was aborted or had a failed send.
 """
 from __future__ import annotations
 
@@ -18,6 +24,16 @@ from pipeline.notify import run_notify
 
 log = logging.getLogger("pipeline")
 
+# Parsing speed-up flattens out beyond ~8 processes, and each worker costs memory.
+DEFAULT_WORKERS = max(1, min(os.cpu_count() or 1, 8))
+
+
+def _positive_int(value: str) -> int:
+    number = int(value)
+    if number < 1:
+        raise argparse.ArgumentTypeError("must be at least 1")
+    return number
+
 
 def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     parser = argparse.ArgumentParser(
@@ -31,6 +47,9 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     parser.add_argument("--fresh", action="store_true",
                         help="delete and rebuild the database instead of loading incrementally "
                              "(also resets notification_sent state)")
+    parser.add_argument("--workers", type=_positive_int, default=DEFAULT_WORKERS,
+                        help="processes used to parse emails; 1 = single process "
+                             f"(default: {DEFAULT_WORKERS} on this machine)")
     parser.add_argument("--threshold", type=float, default=DEFAULT_THRESHOLD,
                         help="minimum body similarity (0-100) for duplicates (default: 90)")
     parser.add_argument("--report", default="duplicates_report.csv",
@@ -61,19 +80,23 @@ def main(argv: list[str] | None = None) -> int:
         return 1
 
     started = time.perf_counter()
-    log.info("[1/4] Extracting emails from %s", args.maildir)
-    records, stats = run_extraction(args.maildir, args.error_log)
-    log.info("Extraction finished in %.1fs; %d failures written to %s",
-             time.perf_counter() - started, stats.failed, args.error_log)
-
-    step = time.perf_counter()
     if args.fresh:
         log.info("--fresh: removing existing database %s", args.db)
         storage.reset_database(args.db)
-    log.info("[2/4] Storing %d records in %s", len(records), args.db)
     conn = storage.connect(args.db)
     try:
         storage.init_db(conn)
+        stored = storage.stored_source_files(conn)  # incremental re-run: skip these files
+
+        step = time.perf_counter()
+        log.info("[1/4] Extracting emails from %s (%d already in the database; workers: %d)",
+                 args.maildir, len(stored), args.workers)
+        records, stats = run_extraction(args.maildir, args.error_log, args.workers, skip=stored)
+        log.info("Extraction finished in %.1fs; %d failures written to %s",
+                 time.perf_counter() - step, stats.failed, args.error_log)
+
+        step = time.perf_counter()
+        log.info("[2/4] Storing %d records in %s", len(records), args.db)
         storage.store_records(conn, records)
         log.info("Storage finished in %.1fs", time.perf_counter() - step)
         del records  # free memory before the dedup scan
@@ -86,11 +109,16 @@ def main(argv: list[str] | None = None) -> int:
 
         step = time.perf_counter()
         log.info("[4/4] Notifications (%s)", "LIVE via MCP" if args.send_live else "dry run")
-        run_notify(conn, args.replies_dir, args.send_live, args.mcp_config,
-                   args.notify_to, args.limit, args.send_log)
+        notify_ok = run_notify(conn, args.replies_dir, args.send_live, args.mcp_config,
+                               args.notify_to, args.limit, args.send_log)
         log.info("Notification step finished in %.1fs", time.perf_counter() - step)
     finally:
         conn.close()
+
+    if not notify_ok:
+        log.error("Pipeline finished in %.1fs with live-send failures (exit code 1)",
+                  time.perf_counter() - started)
+        return 1
     log.info("Pipeline complete in %.1fs", time.perf_counter() - started)
     return 0
 

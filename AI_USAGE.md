@@ -2,6 +2,7 @@
 
 ## 1. Tool used
 - **Claude Code** v2.1.325 (CLI), model **Claude Opus 5.5** (`claude-opus-5-5`).
+- Effort: medium(quick completion) <-> xhigh(plan mode)
 - Claude Code features used:
   - Plan mode, to get a design approved before any code was written.
   - A project `CLAUDE.md`, holding the requirements checklist and the working agreement.
@@ -19,31 +20,30 @@
 2. I asked for **plan mode** covering all four tasks before any code. The AI profiled the real data
    first, so the plan rests on measured facts rather than guesses. For example, 93% of duplicate groups
    share identical timestamps, and two kinds of header folding exist.
-3. Implementation goes **one task at a time, with a stop after each** so I can verify the code, the
+3. Implementation went **one task at a time, with a stop after each** so I could verify the code, the
    output and the numbers before moving on.
-
+4. **Optimization came last**, after all four tasks were verified and committed. I directed two
+   optimizations, parallel parsing and incremental re-runs, to increase throughput and reduce run time
+   (prompt 4).
 
 ### Example prompts
 
 | # | Prompt (lightly edited) | Why it was structured this way |
 |---|---|---|
-| 1 | "Read the assignment document, extract the relevant information, and check whether the dataset is properly there. Look for rules like .py or .ipynb requirements. Make a CLAUDE.md. There are 4 tasks, Follow in order, stopping at each one so I can verify the task, code and performance. Once all tasks are finished then focus on optimizing, but first need a working prototype. Explain the decisions you take: when there are multiple paths, why you chose one and its pros & cons." | Front-loads the full context but **forbids coding**. Requirements and data checks come first, so the AI finds ambiguities and data problems (for example, 1,239 emails with no `To:` header) before they turn into bugs. The checkpoint rule stops it from producing one unreviewable block of code. |
+| 1 | "Read the assignment document, extract the relevant information, and check whether the dataset is properly there. Look for rules like .py or .ipynb requirements. Make a CLAUDE.md. There are 4 tasks. Follow them in order, stopping at each one so I can verify the task, code and performance. Once all tasks are finished we focus on optimizing, but first I need a working prototype. Explain the decisions you take: when there are multiple paths, why you chose one and its pros & cons." | Front-loads the full context but **forbids coding**. Requirements and data checks come first, so the AI finds ambiguities and data problems (for example, 1,239 emails with no `To:` header) before they turn into bugs. The checkpoint rule stops it from producing one unreviewable block of code. |
 | 2 | "Now start plan mode for tasks 1, 2, 3 and 4. First I read the plan, then focus on execution." | Plan mode separates design from execution. The AI profiled the dataset during planning and asked targeted questions (MCP server choice, live-send volume) instead of assuming answers. |
 | 3 | "Use the gmail MCP server's send_email tool to send me the duplicate notice in `output/replies/g0002_latest_….eml`. Use the file's Subject, body and References header exactly, send it to `<my address>`, and set original_recipient to the file's To address." | Names the **server and tool explicitly**, points to the exact draft so nothing is invented, and requires exact headers and body. It also gives the redirect rule (my inbox, with the original sender kept in `X-Original-To`). See §6.3. |
+| 4 | "Implement parallel email parsing to increase throughput and reduce run time, and on re-runs skip the files already stored in the database." | States the **goal** (more throughput, less run time) along with the change, and limits the scope to exactly two optimizations, so nothing else in the already-verified pipeline is touched. The results were then checked against the committed outputs: identical database, report and error log, with extraction going from about 5.3 s to 1.0 s (README §5). |
 
 ---
 
 ## 3. Iterations & debugging
+Because I required a verification checkpoint after every task before approving a commit, Claude Code had to run validation checks at each stage, including random sampling, independent row counts, a clean Python 3.10 virtual environment test, and offline failure tests. None of these bugs required manual code edits on my part; when a verification step caught an issue, Claude Code diagnosed the root cause and fixed it before we moved on to the next task.
 
 ### 3.1 compat32 returns `Header` objects for 8-bit headers (Task 1)
-- **What went wrong:** The AI's first data-profiling script crashed with
-  `TypeError: argument of type 'Header' is not iterable`.
-- **Root cause:** Under the lenient `compat32` policy, the stdlib `email` package returns an
-  `email.header.Header` object instead of a `str` when a header holds raw non-ASCII bytes. That happened in
-  exactly one file (`kitchen-l/_americas/regulatory/113.`).
-- **Fix:** The parser now sends every header through `decode_header()`, which accepts both `str` and
-  `Header`, and decodes each chunk with a fallback chain of declared charset, UTF-8, cp1252, then latin-1.
-  The address `rené.lazure@enron.com` now comes through correctly.
+- **What went wrong:** The AI's first data-profiling script crashed with `TypeError: argument of type 'Header' is not iterable`.
+- **Root cause:** Under the lenient `compat32` policy, Python's `email` package returns an `email.header.Header` object instead of a `str` when a header contains raw non-ASCII bytes. This happened in one specific file (`kitchen-l/_americas/regulatory/113.`).
+- **Fix:** Claude Code updated the parser to pass every header through `decode_header()`, which accepts both `str` and `Header` objects, and decode each chunk using a fallback chain (`declared charset -> UTF-8 -> cp1252 -> latin-1`). The address `rené.lazure@enron.com` now parses cleanly.
 
 ### 3.2 The headings heuristic produced false positives (Task 1)
 - **What went wrong:** On the first version, random sampling showed salutations (`Dave:`, `Jim:`), table
@@ -89,12 +89,65 @@
 ---
 
 ## 4. What I wrote vs. what the AI wrote
-*(Finalized at the end of the project.)*
+
+**Rough split: ~90% AI execution (code & verification) / ~10% human direction, architecture approval, and setup.**
+- **AI's role (Implementation, profiling & testing):** Claude Code wrote all ~1,570 committed lines of Python and SQL across `main.py`, `pipeline/`, `mcp_server/`, `schema.sql`, and `sample_queries.sql`, profiled the dataset, proposed the normalization/tie-breaking rules in Plan Mode, and executed the verification checks.
+- **My role (Workflow design, checkpoint review, and environment setup):** I set up the phased workflow (requiring Plan Mode before coding and mandatory stops after each task), reviewed and approved the design choices and verification results before each git commit, directed the post-prototype performance optimizations (parallel parsing and incremental re-runs), handled the dataset and Gmail/MCP credential setup outside the AI session, and edited the final documentation.
+
+| Area | Written by | Details |
+|---|---|---|
+| `main.py`, `pipeline/`, `mcp_server/`, `schema.sql`, `sample_queries.sql`, `requirements.txt` | AI | Generated task by task after I approved the plan. |
+| Requirements checklist (`CLAUDE.md`), data profiling, the plan | AI | The spec became a checklist, and the dataset was measured before the design. |
+| `README.md`, `AI_USAGE.md` | AI-drafted, updated by me | I decided the content and edited the prompt quotes. |
+| Working method | Me | Task order, a stop after each task, plan mode before code, prototype before optimization, a commit only on my approval. |
+| Decisions | Me | Custom Python MCP server instead of the archived open-source one. Live sends capped with `--limit`. All 9,215 `.eml` drafts committed, as the deliverables list requires. Each task plan approved. |
+| Dataset | Me | Downloaded the CMU dataset and selected the five mailboxes. |
+| Review | Me | Checked each task's results before approving its commit. The AI ran the checks. |
+| Gmail and MCP setup | Me | Turned on 2-Step Verification, created the App Password, and filled in `mcp_config.json` myself, so the password never entered the AI conversation. Ran `claude mcp add-json` to register the server with Claude Code, then ran the `send_email` prompt in a new session. |
+| `.gitignore` | Both | The AI wrote it, and I added some additional files. |
+| Performance optimizations: parallel parsing, incremental re-runs | Me (decision), AI (code) | I asked for both, to increase throughput and reduce run time. Claude Code generated the code. |
+| Live-send exit code | AI recommended, I reviewed, AI implemented | `main.py` now exits with code 1 when live sending fails or is aborted. |
 
 ---
 
 ## 5. Lessons learned
-*(Finalized at the end of the project.)*
+
+### What worked well
+- **Turning the spec into a checklist first.** `CLAUDE.md` kept every requirement in the model's context
+  for the whole session, and each task was checked against it before it was committed.
+- **Planning on measured data.** The AI profiled the dataset before designing anything. That turned up
+  three facts that shaped the plan:
+  - 93% of duplicate groups share an identical timestamp, so ties needed a fixed rule (break them by
+    `source_file`).
+  - Headers fold in two different ways.
+  - 1,239 emails have no `To:` header.
+
+  So the plan already handled what would otherwise have been mid-build surprises.
+- **A checkpoint after each task.** Each task stayed small enough to review and was committed on its own.
+  Problems such as the heading false positives were fixed inside the task, not discovered at the end.
+- **Asking for options and trade-offs.** Each design choice came with alternatives and reasons I could
+  check and defend; the MCP server is one example.
+- **AI-run verification.** The AI checked its own work with concrete tests:
+  - a second run inserts 0 rows;
+  - rebuilding recipient lists gives 0 mismatches;
+  - report rows equal flagged rows;
+  - the drafts match the template text;
+  - output is identical on Python 3.10.
+
+### What was harder than expected
+- **Libraries newer than the model's knowledge.** MCP SDK v2 renamed `FastMCP` to `MCPServer` and hides
+  ordinary exception messages from the client (§3.5, §6.4). Both turned up only by inspecting the
+  installed package. Check the installed version rather than trusting the model's memory.
+- **AI numbers need a second method.** One profiling count was wrong because of CRLF line endings (§3.4).
+  The parser was right, and only an independent count showed which number to trust.
+- **Heuristic fields have no ground truth.** Headings and the body/forward/quote split can only be judged
+  by sampling. The first version of the heading rules looked fine until random samples were read (§3.2).
+- **Similar text is not always a duplicate.** At 90% character similarity, templated emails with the same
+  sender and subject (for example, automated approval notices) count as duplicates. The spec sets the
+  threshold, so this is documented as a limitation. The notice's CONFIRM reply and `--threshold` are the
+  ways to correct it.
+- **Minimum-version support.** Pinning the versions installed under Python 3.12 broke installation on
+  3.10 (§3.3). Only a fresh 3.10 environment caught it.
 
 ---
 
@@ -197,16 +250,29 @@ of the data that is documented in the README.
 timestamp,recipient,subject,status,error
 2026-11-14T19:02:34Z,implici71@gmail.com,[Duplicate Notice] Re: ENA 2000 Offsite,failed,Error executing tool send_email: SMTP delivery failed: SMTPServerDisconnected: Connection unexpectedly closed
 2026-11-14T19:06:12Z,shubhamgajjar14@gmail.com,[Duplicate Notice] Re: ENA 2000 Offsite,sent,
+2026-11-15T01:43:57Z,shubhamgajjar14@gmail.com,[Duplicate Notice] Re: 2000 ENA Vegas Offsite,sent,
 ```
 
-**The database state after the send.** Group 1's latest duplicate is marked notified, and its intended
-recipient was redirected to my inbox:
+**The database state after the sends.** The latest duplicates of groups 1 and 2 are marked notified, and
+their intended recipients were redirected to my inbox:
 ```
-message_id                                    intended_recipient        notification_sent  notification_date
-<9684679.1075854459702.JavaMail.evans@thyme>  david.delainey@enron.com  1                  2026-11-14 19:06:12
+message_id                                     intended_recipient        notification_sent  notification_date
+<9684679.1075854459702.JavaMail.evans@thyme>   david.delainey@enron.com  1                  2026-11-14 19:06:12
+<19227899.1075854457455.JavaMail.evans@thyme>  kay.chapman@enron.com     1                  2026-11-15 01:43:57
 ```
 
 **Claude Code send:** server-returned Message-ID `<179468551110.13604.8733311295844959285@gmail.com>`
 at `2026-11-14 19:45:11 UTC` (see §6.3).
 
-Gmail's SMTP server accepted both sends (status `sent`).
+Gmail's SMTP server accepted every send with status `sent`. The screenshots show two of the notices in the
+Gmail inbox:
+
+| Pipeline send (group 1) | Claude Code send (group 2) |
+|---|---|
+| ![Group 1 notice in the Gmail inbox](docs/screenshot1.png) | ![Group 2 notice in the Gmail inbox](docs/screenshot2.png) |
+
+**Terminal output of the third send.** The optimized pipeline skipped the 22,596 stored files, used 8
+worker processes, and sent one notice through the MCP server (server Message-ID
+`<179470703787.16357.17095565308051444057@gmail.com>`):
+
+![Terminal output of python main.py --send-live --limit 1](docs/screenshot3.png)

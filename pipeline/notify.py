@@ -252,7 +252,9 @@ def send_live(conn: sqlite3.Connection, notifications: list[Notification], confi
 
 def run_notify(conn: sqlite3.Connection, replies_dir: str, send_live_mode: bool = False,
                config_path: str = "mcp_config.json", recipient: str | None = None,
-               limit: int = 5, send_log: str = "output/send_log.csv") -> None:
+               limit: int = 5, send_log: str = "output/send_log.csv") -> bool:
+    """Write the drafts and, in live mode, send the notices. Returns False if live sending
+    was aborted or any send failed (main.py turns that into a non-zero exit code)."""
     notifications = load_notifications(conn)
     groups = sum(n.is_latest for n in notifications)
     drafts = write_drafts(notifications, replies_dir)
@@ -263,10 +265,13 @@ def run_notify(conn: sqlite3.Connection, replies_dir: str, send_live_mode: bool 
     if not send_live_mode:
         log.info("  Dry run: no email sent (use --send-live to send via the Gmail MCP server)")
         log.info("=" * 64)
-        return
+        return True
+    ok = False
     try:
         sent, failed = send_live(conn, notifications, config_path, recipient, limit, send_log)
         log.info("  Live sends: %d sent, %d failed  (logged to %s)", sent, failed, send_log)
+        ok = failed == 0
     except Exception as exc:  # never crash the pipeline on an MCP/config problem
         log.error("  Live sending aborted: %s: %s", type(exc).__name__, exc)
     log.info("=" * 64)
+    return ok
